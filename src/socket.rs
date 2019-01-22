@@ -59,7 +59,7 @@ impl Phoenix {
 
       let runner = ClientBuilder::new(&full_url)
         .unwrap()
-        .async_connect(None, &core.handle())
+        .async_connect(None)
         .and_then(|(duplex, _)| {
           let (sink, stream) = duplex.split();
           stream
