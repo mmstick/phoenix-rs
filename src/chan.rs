@@ -1,21 +1,21 @@
-use serde_json;
 use serde_json::Value;
-use websocket::OwnedMessage;
+// use websocket::Message;
 
-use websocket::futures::sync::mpsc::Sender;
-use websocket::futures::Sink;
+// use websocket::futures::sync::mpsc::Sender;
+// use websocket::futures::Sink;
 
-use event::{Event, PhoenixEvent};
-use message::Message;
+use crate::event::{Event, PhoenixEvent};
+use crate::message::Message as PhoenixMessage;
+use tungstenite::Message;
 
 pub struct Channel {
   topic: String,
   reference: String,
-  sender: Sender<OwnedMessage>,
+  sender: flume::Sender<Message>,
 }
 
 impl Channel {
-  pub fn new(topic: &str, sender: Sender<OwnedMessage>, reference: &str) -> Channel {
+  pub fn new(topic: &str, sender: flume::Sender<Message>, reference: &str) -> Channel {
     Channel {
       topic: topic.to_owned(),
       reference: reference.to_owned(),
@@ -23,21 +23,22 @@ impl Channel {
     }
   }
 
-  pub fn send_message(&mut self, message: OwnedMessage) {
-    if let Err(msg) = self.sender.clone().wait().send(message) {
+  pub fn send_message(&mut self, message: Message) {
+    if let Err(msg) = self.sender.send(message) {
       error!("{:?}", msg)
     }
   }
 
-  fn build_message(&mut self, event: Event, payload: Value) -> OwnedMessage {
-    let message = Message {
+  fn build_message(&mut self, event: Event, payload: Value) -> Message {
+    let message = PhoenixMessage {
       topic: self.topic.to_owned(),
       event,
       reference: Some(self.reference.to_owned()),
       join_ref: Some(self.reference.to_owned()),
       payload,
     };
-    OwnedMessage::Text(serde_json::to_string(&message).unwrap())
+
+    Message::Text(serde_json::to_string(&message).unwrap())
   }
 
   pub fn send(&mut self, event: Event, msg: &Value) {

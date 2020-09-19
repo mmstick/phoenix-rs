@@ -1,4 +1,4 @@
-use event::Event;
+use crate::event::Event;
 use serde_json::Value;
 
 #[derive(Serialize, Deserialize, Debug)]

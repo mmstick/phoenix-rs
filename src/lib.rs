@@ -1,17 +1,21 @@
+#![recursion_limit = "1024"]
+
 #[macro_use]
 extern crate log;
 #[macro_use]
-extern crate serde_derive;
 extern crate serde;
-extern crate serde_json;
-extern crate tokio_core;
-extern crate websocket;
+#[macro_use]
+extern crate async_stream;
+#[macro_use]
+extern crate thiserror;
 
 pub mod chan;
 pub mod error;
 pub mod event;
 pub mod message;
 pub mod socket;
+
+mod websocket;
 
 pub use chan::Channel;
 pub use error::Error;

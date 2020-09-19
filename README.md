@@ -2,71 +2,64 @@
 
 This library is an attempt to create Phoenix client in Rust. 
 
-This crate is tested with https://github.com/laibulle/phoenix_channel_demo
-
-__example__
-
-```
-git clone git@github.com:laibulle/phoenix_channel_demo.git
-cd phoenix_channel_demo
-mix deps.get
-mix phx.server
-```
-
-
 ```rust
-extern crate phoenix;
-#[macro_use]
-extern crate serde_json;
+use phoenix::{Event, Phoenix};
+use smol::Timer;
+use std::time::Duration;
 
-extern crate env_logger;
+fn main() -> anyhow::Result<()> {
+  env_logger::init();
 
-use std::{thread, time};
-use phoenix::{Phoenix, Event};
+  let url = "ws://localhost:9000/socket";
 
-fn main() {
-    env_logger::init();
-    
-    let url = "ws://localhost:4000/socket";
+  let (sender, emitter) = flume::bounded(0);
+  let (callback, messages) = flume::bounded(0);
 
-    // Simulate a user
-    thread::spawn(move || {
-        let mut phx = Phoenix::new(url);
-        let mutex_chan = phx.channel("room:lobby").clone();
-
-        {
-            let mut device_chan = mutex_chan.lock().unwrap();
-            device_chan.join();
-        }
-
-        loop {
-            match phx.out.recv() {
-                Ok(msg) => println!("user1: {:?}", msg),
-                Err(_err) => ()//println!("{:?}", err)
-            }
-        }
-    });
-
-    thread::sleep(time::Duration::from_millis(500));
-
-    // Simulate an other user
-    let mut phx = Phoenix::new(url);
+  // Simulate a user
+  let simulated_user = async move {
+    let mut phx = Phoenix::new(sender, emitter, callback, url);
     let mutex_chan = phx.channel("room:lobby").clone();
 
     {
-        let mut device_chan = mutex_chan.lock().unwrap();
-        device_chan.join();
-        device_chan.send(Event::Custom("new_msg".to_string()), serde_json::from_str(r#"{"body": "Hello"}"#).unwrap());
+      let mut device_chan = mutex_chan.lock().unwrap();
+      device_chan.join();
     }
 
-    loop {
-        match phx.out.recv() {
-            Ok(msg) => println!("user2: {:?}", msg),
-            Err(_err) => ()//println!("{:?}", err)
-        }
+    while let Ok(message) = messages.recv_async().await {
+      println!("user1: ${:?}", message);
     }
+
+    Ok(())
+  };
+
+  // Simulate an other user
+
+  let other_user = async move {
+    Timer::after(Duration::from_millis(500)).await;
+
+    let (sender, emitter) = flume::bounded(0);
+    let (callback, messages) = flume::bounded(0);
+
+    let mut phx = Phoenix::new(sender, emitter, callback, url);
+    let mutex_chan = phx.channel("room:lobby").clone();
+
+    {
+      let mut device_chan = mutex_chan.lock().unwrap();
+      device_chan.join();
+      let body = serde_json::from_str(r#"{"body": "Hello"}"#).unwrap();
+      device_chan.send(Event::Custom("new_msg".to_string()), &body);
+    }
+
+    while let Ok(message) = messages.recv_async().await {
+      println!("user2: {:?}", message);
+    }
+
+    Ok(())
+  };
+
+  let (a, b) = smol::block_on(futures::future::join(simulated_user, other_user));
+  a.and(b)
 }
-
 ```
 
 ```

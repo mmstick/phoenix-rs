@@ -1,28 +1,39 @@
 [package]
 name = "phoenix"
-version = "0.2.2"
+version = "0.3.0"
 authors = [
   "Guillaume Bailleul <laibulle@gmail.com>",
   "Marc-Antoine Arnaud <maarnaud@media-io.com>",
+  "Michael Aaron Murphy <mmstick@pm.me>",
 ]
-repository = "https://github.com/laibulle/phoenix-rs"
+repository = "https://github.com/system76/phoenix-rs"
 description = "Rust client for Phoenix channels"
 license = "MIT"
 readme="README.md"
 keywords = ["phoenix-channels", "websocket", "phoenix", "channels"]
 categories = ["network-programming", "web-programming", "web-programming::websocket"]
+edition = "2018"
 
 [dependencies]
-env_logger = "0.6.0"
-log = "0.4.6"
-serde_json = "1.0.36"
-serde_derive = "1.0.85"
-serde = "1.0.85"
-tokio-core = "0.1.17"
-websocket = "0.22.2"
+anyhow = "1.0"
+async-io = "1.1"
+async-native-tls = "0.3"
+async-stream = "0.3"
+async-tungstenite = { version = "0.8", features = ["async-native-tls"] }
+env_logger = "0.7"
+flume = "0.9"
+futures = "0.3"
+log = "0.4"
+native-tls = "0.2"
+serde = { version = "1.0", features = ["derive" ]}
+serde_json = "1.0"
+smol = "1.0"
+thiserror = "1.0"
+tungstenite = "0.11"
+url = "2.1"
 
-[badges]
-travis-ci = { repository = "laibulle/phoenix-rs" }
+[dev-dependencies]
+anyhow = "1.0"
 
 [lib]
 name = "phoenix"

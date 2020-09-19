@@ -1,39 +1,35 @@
+use crate::chan::Channel;
+use crate::event::{Event, PhoenixEvent};
+use crate::message::Message as PhoenixMessage;
+use async_io::Timer;
+use async_native_tls::TlsConnector;
+use futures::StreamExt;
+use serde_json;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::{thread, time};
-
-use serde_json;
-use websocket::client::ClientBuilder;
-use websocket::OwnedMessage;
-
-use chan::Channel;
-use event::{Event, PhoenixEvent};
-use message::Message as PhoenixMessage;
-use tokio_core::reactor::Core;
-use websocket::futures::sync::mpsc::{Receiver, Sender};
-use websocket::futures::{Future, Sink, Stream};
-use websocket::result::WebSocketError;
+use std::time;
+use tungstenite::Message;
 
 pub struct Phoenix {
   count: u8,
   channels: Arc<Mutex<Vec<Arc<Mutex<Channel>>>>>,
-  sender: Sender<OwnedMessage>,
+  sender: flume::Sender<Message>,
 }
 
 impl Phoenix {
   pub fn new(
-    sender: &Sender<OwnedMessage>,
-    receiver: Receiver<OwnedMessage>,
-    callback: &Sender<PhoenixMessage>,
+    sender: flume::Sender<Message>,
+    receiver: flume::Receiver<Message>,
+    callback: flume::Sender<PhoenixMessage>,
     url: &str,
   ) -> Phoenix {
     Phoenix::new_with_parameters(sender, receiver, callback, url, &HashMap::new())
   }
 
   pub fn new_with_parameters(
-    sender: &Sender<OwnedMessage>,
-    receiver: Receiver<OwnedMessage>,
-    callback: &Sender<PhoenixMessage>,
+    sender: flume::Sender<Message>,
+    receiver: flume::Receiver<Message>,
+    callback: flume::Sender<PhoenixMessage>,
     url: &str,
     params: &HashMap<&str, &str>,
   ) -> Phoenix {
@@ -54,78 +50,122 @@ impl Phoenix {
 
     let copy_callback = callback.clone();
 
-    thread::spawn(move || {
-      let mut core = Core::new().unwrap();
-
-      let runner = ClientBuilder::new(&full_url)
-        .unwrap()
-        .async_connect(None)
-        .and_then(|(duplex, _)| {
-          let (sink, stream) = duplex.split();
-          stream
-            .filter_map(|message| match message {
-              OwnedMessage::Close(e) => {
-                let message = PhoenixMessage {
-                    topic: "phoenix".to_string(),
-                    event: Event::Defined(PhoenixEvent::Close),
-                    reference: None,
-                    join_ref: None,
-                    payload: serde_json::Value::Null,
-                  };
-                let _ = copy_callback.clone().wait().send(message);
-                Some(OwnedMessage::Close(e))
-              },
-              OwnedMessage::Ping(d) => Some(OwnedMessage::Pong(d)),
-              OwnedMessage::Text(content) => {
-                let message: PhoenixMessage = serde_json::from_str(&content).unwrap();
-                let _ = copy_callback.clone().wait().send(message);
-                None
-              }
-              _ => None,
-            })
-            .select(receiver.map_err(|_| WebSocketError::NoDataAvailable))
-            .forward(sink)
-        });
-
-      if let Err(msg) = core.run(runner) {
-        let message = PhoenixMessage {
+    let connection = async move {
+      let (tx, mut rx) = match crate::websocket::connect(&full_url, TlsConnector::new()).await {
+        Ok((stream, _)) => stream.split(),
+        Err(why) => {
+          let _ = copy_callback.send(PhoenixMessage {
             topic: "phoenix".to_string(),
             event: Event::Defined(PhoenixEvent::Close),
             reference: None,
             join_ref: None,
             payload: serde_json::Value::Null,
-          };
-        let _ = copy_callback.clone().wait().send(message);
-        error!("{:?}", msg);
-      }
-    });
+          });
 
-    let tx = sender.clone();
-    thread::spawn(move || loop {
-      let mut stdin_sink = tx.clone().wait();
-      let msg = PhoenixMessage {
-        topic: "phoenix".to_owned(),
-        event: Event::Defined(PhoenixEvent::Heartbeat),
-        reference: None,
-        join_ref: None,
-        payload: serde_json::from_str("{}").unwrap(),
+          error!("{:?}", why);
+
+          return Err(why);
+        }
       };
 
-      let message = OwnedMessage::Text(serde_json::to_string(&msg).unwrap());
-      if stdin_sink.send(message).is_err() {
-        error!("unable to send Heartbeat");
-        break;
+      // Receives and responds to Messages received through the websocket
+      let socket_stream = {
+        let callback = copy_callback.clone();
+        stream! {
+          while let Some(message) = rx.next().await {
+            let message = match message {
+              Ok(message) => message,
+              Err(why) => {
+                let _ = callback.send(PhoenixMessage {
+                  topic: "phoenix".to_string(),
+                  event: Event::Defined(PhoenixEvent::Close),
+                  reference: None,
+                  join_ref: None,
+                  payload: serde_json::Value::Null,
+                });
+
+                error!("{:?}", why);
+
+                break;
+              }
+            };
+
+            match message {
+              Message::Text(message) => {
+                let message: PhoenixMessage = serde_json::from_str(&message).unwrap();
+                let _ = callback.send(message);
+              }
+
+              Message::Ping(msg) => yield Message::Pong(msg),
+
+              Message::Close(msg) => {
+                let _ = callback.send(PhoenixMessage {
+                  topic: "phoenix".to_string(),
+                  event: Event::Defined(PhoenixEvent::Close),
+                  reference: None,
+                  join_ref: None,
+                  payload: serde_json::Value::Null,
+                });
+
+                yield Message::Close(msg);
+              }
+
+              _ => (),
+            }
+          }
+        }
+      };
+
+      if let Err(why) = futures::stream::select(socket_stream, receiver.into_stream())
+        .map(Ok)
+        .forward(tx)
+        .await
+      {
+        let _ = copy_callback.send(PhoenixMessage {
+          topic: "phoenix".to_string(),
+          event: Event::Defined(PhoenixEvent::Close),
+          reference: None,
+          join_ref: None,
+          payload: serde_json::Value::Null,
+        });
+        error!("{:?}", why);
       }
 
-      thread::sleep(time::Duration::from_secs(30));
-    });
+      Ok(())
+    };
+
+    let tx = sender.clone();
+    let heartbeat = async move {
+      loop {
+        let stdin_sink = tx.clone();
+
+        let msg = PhoenixMessage {
+          topic: "phoenix".to_owned(),
+          event: Event::Defined(PhoenixEvent::Heartbeat),
+          reference: None,
+          join_ref: None,
+          payload: serde_json::from_str("{}").unwrap(),
+        };
+
+        let message = Message::Text(serde_json::to_string(&msg).unwrap());
+
+        if stdin_sink.send(message).is_err() {
+          error!("unable to send Heartbeat");
+          break;
+        }
+
+        Timer::after(time::Duration::from_secs(30)).await;
+      }
+    };
+
+    smol::spawn(futures::future::join(connection, heartbeat)).detach();
 
     let channels: Arc<Mutex<Vec<Arc<Mutex<Channel>>>>> = Arc::new(Mutex::new(vec![]));
 
     Phoenix {
       count: 0,
-      channels: channels.clone(),
-      sender: sender.clone(),
+      channels,
+      sender,
     }
   }
 

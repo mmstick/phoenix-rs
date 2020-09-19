@@ -24,8 +24,6 @@ pub struct Test {
 
 #[test]
 fn test_event_serialization() {
-  use serde_json;
-
   let t = Test {
     event: Event::Custom("blablabla".to_string()),
   };
